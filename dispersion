@@ -1,0 +1,169 @@
+#!/bin/bash
+# Dispersion is a lightweight parallel SSH execution tool.
+
+function display_banner {
+    printf "\n     _ _____ ___________ ___________  _____ _____ _____ _   _ \n"
+    printf "    | |_   _/  ___| ___ \  ___| ___ \/  ___|_   _|  _  | \ | |\n"
+    printf "  __| | | | \\ \`--.| |_/ / |__ | |_/ /\\ \`--.  | | | | | |  \\| |\n"
+    printf " / _\` | | |  \`--. \\  __/|  __||    /  \`--. \\ | | | | | | . \` |\n"
+    printf "| (_| |_| |_/\\__/ / |   | |___| |\\ \ /\\__/ /_| |_\\ \\_/ / |\\  |\n"
+    printf " \\__,_|\\___/\\____/\\_|   \\____/\\_| \\_|\\____/ \\___/ \\___/\\_| \\_/\n"
+    printf "\t\t\t\tthe parallel execution engine.\n\n"
+}
+
+function usage {
+    printf "Usage: dispersion <hosts file> <script to run>\n"
+    #printf "Options:\n"
+    #printf "\t-f | --file\n"
+    #printf "\t\tFile with domain names to execute on. If no file is specified, commands are run locally.\n"
+    #printf "\t-c | --command\n"
+    #printf "\t\tCommand(s) to execute. For multiple commands, separate with semicolon.\n"
+    #printf "\t-s | --script\n"
+    #printf "\t\tScript to execute.\n"
+    printf "\n"
+}
+
+function handle_cli {
+    background=false
+    while [ "$1" != "" ]; do
+        case $1 in
+            -k | --key )
+            shift
+            key_file=$1
+            # dispersion will look for key file by default, can specify.
+            ;;
+            -c | --command )
+            shift
+            ssh_command=$1
+            # can run single command instead of script over SSH
+            ;;
+            -b | --background )
+            background=true
+            # operate in the background (ie, no stdout)
+            ;;
+            -b | --password )
+            password_prompt=true
+            # prompt for a password instead of using SSH keys
+            ;;
+            -h | --help )
+            usage
+            ;;
+            * )
+            ;;
+        esac
+        shift
+    done
+}
+
+function exception {
+    printf "!! exception -> $@\n"
+    exit 1
+}
+
+function msg {
+    #if [ ! background ]; then
+    printf "$@\n"
+    #fi
+    return 0
+}
+
+function verify_hosts_file {
+    if [ -z $hosts_file ]; then
+        hosts_file="none"
+    fi
+    msg "verifying hosts file: $hosts_file"
+    test -f $hosts_file &>/dev/null || exception "host file does not exist."
+    test -r $hosts_file &>/dev/null || exception "host file is not readable."
+    return 0
+}
+
+function verify_script {
+    if [ -z $script ]; then
+        script="none"
+    fi
+    msg "verifying script: $script"
+    test -f $script &>/dev/null || exception "$script does not exist."
+    test -x $script &>/dev/null || exception "$script is not executable."
+    return 0
+}
+
+function verify_configuration {
+    msg "verifying configuration..."
+    verify_hosts_file
+    verify_script
+    which ssh &>/dev/null || exception "ssh is not installed."
+    return 0
+}
+
+function disperse {
+    msg "dispersing..."
+    for host in $(cat $hosts_file); do
+        msg "\t...to $host"
+        for key in $(grep --mmap -R "BEGIN.*PRIVATE KEY" ~/.ssh/ | sed s/':'/' '/ | awk '{ print $1 }'); do
+            if [ -z $key_file ]; then
+                msg "\t...no key file/password specified, trying $key"
+            fi
+            ssh_command="ssh -i $key -T"
+            ($ssh_command $host &>$host.log; echo $? >> $host.log) &
+            local pid=$!
+            msg "\t...pid=$pid"
+            printf "%s" $pid > $host.pid
+        done
+    done
+    return 0
+}
+
+function maintain {
+    msg "checking status"
+    stay_awake=true
+    while [ $stay_awake = "true" ]; do
+        stay_awake=false
+        for pid_file in $(ls -l | awk '/pid/ { print $9 }'); do
+            local pid="$(cat $pid_file)"
+            ps -p $pid &>/dev/null
+            if [ $? -ne 0 ]; then 
+                rm -f $pid_file
+            else
+                stay_awake=true
+            fi
+        done
+        sleep 2
+        printf "."
+    done
+    msg "\nlast process finished..."
+    return 0
+}
+
+function conclude {
+    msg "gathering results..."
+    for host in $(cat $hosts_file); do
+        local ret_val=$(tail -n1 $host.log)
+        if [ $ret_val -ne 0 ]; then
+            msg "\twarning! host $host finished with a non-zero return code..."
+        else
+            msg "\thost $host returned successfully..."
+        fi
+    done
+    return 0
+}
+
+function main {
+    display_banner
+    #handle_cli $@
+    
+    hosts_file="$1"
+    script="$2"
+    
+    msg "starting..."
+    verify_configuration
+    disperse
+    maintain
+    conclude
+    msg "done!"
+    
+    return 0
+}
+
+main $@
+
+exit 0
