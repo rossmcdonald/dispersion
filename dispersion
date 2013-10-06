@@ -1,8 +1,9 @@
 #!/bin/bash
-# Dispersion is a lightweight parallel SSH execution tool.
+# Dispersion is a lightweight and simple parallel SSH execution tool.
+# Created and maintained by Ross McDonald, mcdonaldrossc@gmail.com
 
 function display_banner {
-    printf "\n     _ _____ ___________ ___________  _____ _____ _____ _   _ \n"
+    printf "     _ _____ ___________ ___________  _____ _____ _____ _   _ \n"
     printf "    | |_   _/  ___| ___ \  ___| ___ \/  ___|_   _|  _  | \ | |\n"
     printf "  __| | | | \\ \`--.| |_/ / |__ | |_/ /\\ \`--.  | | | | | |  \\| |\n"
     printf " / _\` | | |  \`--. \\  __/|  __||    /  \`--. \\ | | | | | | . \` |\n"
@@ -12,47 +13,56 @@ function display_banner {
 }
 
 function usage {
-    printf "Usage: dispersion <hosts file> <script to run>\n"
-    #printf "Options:\n"
-    #printf "\t-f | --file\n"
-    #printf "\t\tFile with domain names to execute on. If no file is specified, commands are run locally.\n"
-    #printf "\t-c | --command\n"
-    #printf "\t\tCommand(s) to execute. For multiple commands, separate with semicolon.\n"
-    #printf "\t-s | --script\n"
-    #printf "\t\tScript to execute.\n"
+    printf "\nusage: dispersion [options] <hosts file> <script to run>\n"
+    printf "options:\n"
+    printf "\t-k\tkey file to use for SSH connection.\n"
+    printf "\t-b\tsend dispersion to the background.\n"
+    printf "\t-p\tprompt for password when connecting over SSH.\n"
+    printf "\t-s\tspecify the use of sudo commands.\n"
     printf "\n"
 }
 
 function handle_cli {
+    key_specified=false
     background=false
-    while [ "$1" != "" ]; do
-        case $1 in
-            -k | --key )
-            shift
-            key_file=$1
-            # dispersion will look for key file by default, can specify.
+    password_prompt=false
+    require_sudo=false
+    while getopts k:bpsh opt; do
+        case $opt in
+            k)
+            key_specified=true
+            key_file="$OPTARG"
+            # dispersion will look for key file by default, can also specify.
             ;;
-            -c | --command )
-            shift
-            ssh_command=$1
-            # can run single command instead of script over SSH
-            ;;
-            -b | --background )
+            b)
             background=true
-            # operate in the background (ie, no stdout)
+            printf "sending dispersion to the background...\n"
+            # for dispersion, sending everything to the background
             ;;
-            -b | --password )
+            p)
             password_prompt=true
+            printf "will prompt for password when connecting...\n"
             # prompt for a password instead of using SSH keys
             ;;
-            -h | --help )
-            usage
+            s)
+            require_sudo=true
+            printf "will use sudo commands when executing...\n"
+            # prompt for a password instead of using SSH keys
             ;;
-            * )
+            h)
+            usage
+            exit 1
+            ;;
+            \?)
+            usage
+            exit 1
             ;;
         esac
-        shift
     done
+    shift $((OPTIND - 1))
+
+    hosts_file="$1"
+    script="$2"
 }
 
 function exception {
@@ -61,15 +71,14 @@ function exception {
 }
 
 function msg {
-    #if [ ! background ]; then
     printf "$@\n"
-    #fi
     return 0
 }
 
 function verify_hosts_file {
     if [ -z $hosts_file ]; then
-        hosts_file="none"
+        usage
+        exception "no host file specified."
     fi
     msg "verifying hosts file: $hosts_file"
     test -f $hosts_file &>/dev/null || exception "host file does not exist."
@@ -79,7 +88,8 @@ function verify_hosts_file {
 
 function verify_script {
     if [ -z $script ]; then
-        script="none"
+        usage
+        exception "no script specified."
     fi
     msg "verifying script: $script"
     test -f $script &>/dev/null || exception "$script does not exist."
@@ -89,48 +99,83 @@ function verify_script {
 
 function verify_configuration {
     msg "verifying configuration..."
+    
+    echo "key_specified=$key_specified"
+    if [ $key_specified = "true" ]; then
+        if [ $password_prompt = "true" ]; then
+            exception "cannot use both password and key file, please choose one"
+        fi
+        if [ ! -f $key_file ]; then
+            exception "key file specified does not exist."
+        fi
+        printf "\tkey specified, will be using: $key_file\n"
+    fi
+    
+    if [ $password_prompt = "true" ]; then
+        printf "will prompt for password when connecting...\n"
+    fi
+    
     verify_hosts_file
     verify_script
     which ssh &>/dev/null || exception "ssh is not installed."
     return 0
 }
 
+function ssh_test {
+    printf "\t\tverifying ssh connection is valid..."
+    ssh_command="ssh -i $key_file -T -o StrictHostKeyChecking=false"
+    $ssh_command $1 'hostname -f' &>$1.log
+    if [ $? -eq 0 ]; then
+        printf " valid!\n"
+        return 0
+    else
+        printf " invalid!\n"
+        return 1
+    fi
+}
+
 function disperse {
     msg "dispersing..."
     for host in $(cat $hosts_file); do
-        msg "\t...to $host"
-        for key in $(grep --mmap -R "BEGIN.*PRIVATE KEY" ~/.ssh/ | sed s/':'/' '/ | awk '{ print $1 }'); do
-            if [ -z $key_file ]; then
-                msg "\t...no key file/password specified, trying $key"
-            fi
-            ssh_command="ssh -i $key -T"
-            ($ssh_command $host &>$host.log; echo $? >> $host.log) &
-            local pid=$!
-            msg "\t...pid=$pid"
-            printf "%s" $pid > $host.pid
-        done
+        msg "\tto $host..."
+        if [ ! key_specified = "true" ]; then
+            for key_file in $(grep --mmap -R "BEGIN.*PRIVATE KEY" ~/.ssh/ | sed s/':'/' '/ | awk '{ print $1 }'); do
+                msg "\t\tno SSH key specified, trying $key_file"
+                ssh_test $host && break
+            done
+        fi
+        ssh_options="-T -i $key_file -o StrictHostKeyChecking=false"
+        if [ require_sudo = "true" ]; then
+            ssh_command="ssh $ssh_options $host \'sudo /bin/bash -s\' < $script &>$host.log"
+        else
+            ssh_command="ssh $ssh_options $host \'/bin/bash -s\' < $script &>$host.log"
+        fi
+        eval "($ssh_command; echo $? >> $host.log) &"
+        local pid=$!
+        msg "\t\tpid=$pid"
+        printf "%s\n" $pid > $host.pid
     done
     return 0
 }
 
 function maintain {
-    msg "checking status"
+    printf "checking status."
     stay_awake=true
     while [ $stay_awake = "true" ]; do
         stay_awake=false
         for pid_file in $(ls -l | awk '/pid/ { print $9 }'); do
             local pid="$(cat $pid_file)"
             ps -p $pid &>/dev/null
-            if [ $? -ne 0 ]; then 
+            if [ $? -ne 0 ]; then
                 rm -f $pid_file
             else
                 stay_awake=true
             fi
         done
-        sleep 2
+        sleep 5
         printf "."
     done
-    msg "\nlast process finished..."
+    msg " done!"
     return 0
 }
 
@@ -149,18 +194,11 @@ function conclude {
 
 function main {
     display_banner
-    #handle_cli $@
-    
-    hosts_file="$1"
-    script="$2"
-    
-    msg "starting..."
+    handle_cli $@    
     verify_configuration
     disperse
     maintain
-    conclude
-    msg "done!"
-    
+    conclude    
     return 0
 }
 
