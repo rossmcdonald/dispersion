@@ -126,21 +126,20 @@ function ssh_test {
     ssh_command="ssh -i $key_file -T -o StrictHostKeyChecking=false"
     $ssh_command $1 'hostname -f' &>$1.log
     if [ $? -eq 0 ]; then
-        printf " valid!\n"
+        printf " valid.\n"
         return 0
     else
-        printf " invalid!\n"
+        printf " invalid.\n"
         return 1
     fi
 }
 
 function disperse {
-    msg "dispersing..."
     for host in $(cat $hosts_file); do
-        msg "\tto $host..."
-        if [ ! key_specified = "true" ]; then
+        msg "dispersing to $host..."
+        if [ key_specified = "false" ]; then
             for key_file in $(grep --mmap -R "BEGIN.*PRIVATE KEY" ~/.ssh/ | sed s/':'/' '/ | awk '{ print $1 }'); do
-                msg "\t\tno SSH key specified, trying $key_file"
+                msg "\tno SSH key specified, trying $key_file"
                 ssh_test $host && break
             done
         fi
@@ -152,14 +151,14 @@ function disperse {
         fi
         eval "($ssh_command; echo $? >> $host.log) &"
         local pid=$!
-        msg "\t\tpid=$pid"
+        msg "\tforked, pid=$pid"
         printf "%s\n" $pid > $host.pid
     done
     return 0
 }
 
 function maintain {
-    printf "checking status."
+    printf "waiting for scripts to finish."
     stay_awake=true
     while [ $stay_awake = "true" ]; do
         stay_awake=false
@@ -175,7 +174,7 @@ function maintain {
         sleep 5
         printf "."
     done
-    msg " done!"
+    msg " done."
     return 0
 }
 
