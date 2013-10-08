@@ -3,7 +3,7 @@
 # Created and maintained by Ross McDonald, mcdonaldrossc@gmail.com
 
 function display_banner {
-    printf "     _ _____ ___________ ___________  _____ _____ _____ _   _ \n"
+    printf "\n     _ _____ ___________ ___________  _____ _____ _____ _   _ \n"
     printf "    | |_   _/  ___| ___ \  ___| ___ \/  ___|_   _|  _  | \ | |\n"
     printf "  __| | | | \\ \`--.| |_/ / |__ | |_/ /\\ \`--.  | | | | | |  \\| |\n"
     printf " / _\` | | |  \`--. \\  __/|  __||    /  \`--. \\ | | | | | | . \` |\n"
@@ -36,17 +36,14 @@ function handle_cli {
             ;;
             b)
             background=true
-            printf "sending dispersion to the background...\n"
             # for dispersion, sending everything to the background
             ;;
             p)
             password_prompt=true
-            printf "will prompt for password when connecting...\n"
             # prompt for a password instead of using SSH keys
             ;;
             s)
             require_sudo=true
-            printf "will use sudo commands when executing...\n"
             # prompt for a password instead of using SSH keys
             ;;
             h)
@@ -115,6 +112,10 @@ function verify_configuration {
         printf "will prompt for password when connecting...\n"
     fi
     
+    if [ $require_sudo = "true" ]; then
+        printf "will run commands through sudo...\n"
+    fi
+    
     verify_hosts_file
     verify_script
     which ssh &>/dev/null || exception "ssh is not installed."
@@ -122,44 +123,42 @@ function verify_configuration {
 }
 
 function ssh_test {
-    printf "\t\tverifying ssh connection is valid..."
     ssh_command="ssh -i $key_file -T -o StrictHostKeyChecking=false"
     $ssh_command $1 'hostname -f' &>$1.log
     if [ $? -eq 0 ]; then
-        printf " valid!\n"
+        printf " -> valid!\n"
         return 0
     else
-        printf " invalid!\n"
+        printf " -> invalid!\n"
         return 1
     fi
 }
 
 function disperse {
-    msg "dispersing..."
     for host in $(cat $hosts_file); do
-        msg "\tto $host..."
-        if [ ! key_specified = "true" ]; then
+        msg "dispersing to $host..."
+        if [ ! $key_specified = "true" ]; then
             for key_file in $(grep --mmap -R "BEGIN.*PRIVATE KEY" ~/.ssh/ | sed s/':'/' '/ | awk '{ print $1 }'); do
-                msg "\t\tno SSH key specified, trying $key_file"
+                printf "\tno SSH key specified, trying key: $key_file"
                 ssh_test $host && break
             done
         fi
         ssh_options="-T -i $key_file -o StrictHostKeyChecking=false"
-        if [ require_sudo = "true" ]; then
-            ssh_command="ssh $ssh_options $host \'sudo /bin/bash -s\' < $script &>$host.log"
+        if [ $require_sudo = "true" ]; then
+            ssh_command="ssh $ssh_options $host 'sudo /bin/bash -s' < $script &>$host.log"
         else
-            ssh_command="ssh $ssh_options $host \'/bin/bash -s\' < $script &>$host.log"
+            ssh_command="ssh $ssh_options $host '/bin/bash' < $script &>$host.log"
         fi
-        eval "($ssh_command; echo $? >> $host.log) &"
+        eval "($ssh_command; echo \$? >> $host.log) &"
         local pid=$!
-        msg "\t\tpid=$pid"
         printf "%s\n" $pid > $host.pid
+        msg "\topened pid = $pid. see activity at: $host.log"
     done
     return 0
 }
 
 function maintain {
-    printf "checking status."
+    printf "running ."
     stay_awake=true
     while [ $stay_awake = "true" ]; do
         stay_awake=false
@@ -172,7 +171,7 @@ function maintain {
                 stay_awake=true
             fi
         done
-        sleep 5
+        sleep 10
         printf "."
     done
     msg " done!"
@@ -180,7 +179,7 @@ function maintain {
 }
 
 function conclude {
-    msg "gathering results..."
+    msg "collecting results..."
     for host in $(cat $hosts_file); do
         local ret_val=$(tail -n1 $host.log)
         if [ $ret_val -ne 0 ]; then
