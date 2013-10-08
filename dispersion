@@ -174,7 +174,7 @@ function maintain {
         sleep 10
         printf "."
     done
-    msg " done!"
+    msg " done."
     return 0
 }
 
